@@ -1,0 +1,322 @@
+#!/bin/bash
+# VERSION 0.1
+# Created by LC on 01 July 2011
+# lcssh	- long course ssh
+#set -x 
+_BASE_NAME_="$(basename $0)"
+_TARGETS_F_=""
+_SCRIPT_F_=""
+_SCRIPT_F_BASENAME_=""
+_SSH_USERS_=""
+_SSH_TIMEOUT_=20
+_RUN_TIMEOUT_=30
+_OUTPUT_F_=""
+_SUBSCRIPTS_F_=""
+
+_SSH_="/usr/bin/ssh -q -o Preferredauthentications=publickey,hostbased -o Protocol=2 -o BatchMode=yes -o StrictHostKeyChecking=no " 
+
+_MASTER_FOLDER_=/tmp/$RANDOM-$(date +%s)
+_SCRIPTS_TMP_DIR_=/tmp/$RANDOM-$(date +%s)
+_SCRIPTS_BUNDLE_=$RANDOM-$(date +$s).tar 
+
+SSH_AUTH_SOCK=""
+
+export_SSH_AUTH_SOCK()
+{
+	local USER_ID=$(id -un)
+	local SSHAGENTPID=$(ps -ef |grep $USER_ID |grep ssh-agent |grep -v grep | awk  '{print$2}')
+	if [ "$SSHAGENTPID" = "" ]
+	then
+       		echo "ERROR: ssh-agent not found."
+        	exit 1
+	else
+	       	local SSHAUTHSOCKPID=$(expr $SSHAGENTPID - 1 )
+       	 	local SSHAUTHSOCK_FILE=$(ls /tmp/ssh*${SSHAUTHSOCKPID}/agent.${SSHAUTHSOCKPID} | tail -1  2>/dev/null )
+        	if [ -r "$SSHAUTHSOCK_FILE" ]
+        	then
+                	export SSH_AUTH_SOCK=$SSHAUTHSOCK_FILE
+        	else
+                	echo "ERROR: SSH_AUTH_SOCK is not able to setup."
+                	exit 1
+        	fi
+	fi
+}
+
+printUsage()
+{
+	echo "	"
+	echo "usage:	$_BASE_NAME_ -a hosts_file -s script_file"
+	echo "	-u login_name[,login_name2,..][-t connect_timeout]"
+	echo "	[-T execution_timeout]"
+	echo "	[-f sub_script_file1[,sub_script_file2,...]"
+	echo "	"
+	echo "Compulsory swithces:"
+	echo "	-a 	Assets file. Each asset per line. "
+	echo "		If the line start with '#', it will be "
+	echo "		excluded."
+	echo "	-s 	Executable file (can be binary). This file"
+	echo "		will be automatically executed once it "
+	echo "		reached the remote asset."
+	echo "	-u	Then user(s) username to log in as on the "
+	echo "		remote asset. If more than one username to, "
+	echo "		to log in, use ',' as separator. " 
+	echo "	"
+	echo "Optional:"
+	echo "	-t	Specifies the timeout (in seconds) for ssh "
+	echo "		ConnectTimeout option. See man ssh_config"
+	echo "		for more details on ConnectTimeout."
+	echo "		The default is 20 seconds."
+	echo "	-T	Specifies the timeout (in seconds) for each"
+	echo "		established ssh connection. This is not the"
+	echo "		same as ConnectTimeout in ssh_config ( "
+	echo "		ConnectTimeout can not timeout established " 
+	echo "		connection ). To overcome this issue, you"
+	echo "		can specify a timeout value (in seconds)."
+	echo "		If on average one remote asset needs 60"
+	echo "		seconds to accomplish the task, then the"
+	echo "		timeout value can be set to '-T 60'."
+	echo "		The default value is 30 seconds."
+	echo "	-f	Specify sub executable file(s). Unlike the"
+	echo "		executable file in option '-s', these file(s)"
+	echo "		will not be executed automatically. This"
+	echo "		option is useful when the executable file in"
+	echo "		option '-s' depends on other sub executable"
+	echo "		file(s) to carry out the task. Use ',' as"
+	echo "		separator for more than one files." 
+	echo "	"		
+	echo "	"
+	echo "Viewing output:"
+	echo "	The output is standard I/O streams. You can redirect"
+	echo "	its stdout and stderr into different files and view "
+	echo " 	it later."
+	echo "	The returned results of each remote asset is tagged "
+	echo "	with <asset_hostname:start> at the beginning,"
+	echo "	and with <asset_hostname:end> at the end."
+	echo "	For example, the \`uname\` returned of two assets  "
+	echo "	cbj-u-s00005 and riju19 looks like this"
+	echo ""
+	echo "		<cbj-u-s00005:start>"
+	echo "		SunOS"
+	echo "		<cbj-u-s00005:end>"
+	echo ""
+	echo "		<riju19:start>"
+	echo "		AIX"
+	echo "		<riju19:end>"
+	echo ""
+	echo "	Lets say the above results had been redirected to" 
+	echo "	file 'output.txt'. To extract only results of "
+	echo "	riju19, you can use sed command"
+	echo " "
+	echo "	sed -n '/<riju19:start>/,/<riju19:end>/p' output.txt"
+	echo ""
+	echo ""
+	echo "Example 1:"
+	echo "	"	
+	echo "	$ $_BASE_NAME_ -a assets.txt -s uptime.sh -u root \ "
+	echo "	> uptime_output.txt 2>uptime_errors.txt" 
+	echo " "
+	echo "	Remote execute 'uptime.sh' on all the hosts listed in"
+	echo "	'assets.txt' as 'root' logon name. The results is"
+	echo "	redirected to file 'uptime_output.txt', and the errors"
+	echo "	is redirected to file 'uptime_errors.txt."
+	echo " "
+	echo "Example 2: "
+	echo "	$ $_BASE_NAME_ -a hostlist.txt -s oslevel.exe \ "
+	echo "	-u root,luxops -t 30 -T 60"
+	echo " "
+	echo "	Remote execute 'oslevel.exe' on all the hosts listed"
+	echo "	in 'hostlist.txt'. If it failed to access via 'root'," 
+	echo "	then 'luxops' will be used  as next logon name."
+	echo "	The ssh 'ConnectTimeout' is set to 30 seconds, and "
+	echo "	the timeout for each ssh process is set to 60 seconds."
+	echo " "
+	
+
+}
+
+getOptions()
+{
+	local OPT_COUNT=0
+	local COMPULSORY_NUM_OPT=3
+	while getopts "a:s:u:t:T:f:" OPTION 
+	do
+	case $OPTION in
+		a)
+		_TARGETS_F_=$OPTARG
+		OPT_COUNT=$(( $OPT_COUNT + 1 ))
+		[ -z "$_TARGETS_F_" ] && printUsage && exit 1
+		;;
+		s)
+		_SCRIPT_F_=$OPTARG
+		OPT_COUNT=$(( $OPT_COUNT + 1 ))
+		[ -z "$_SCRIPT_F_" ] && printUsage && exit 1
+		_SCRIPT_F_BASENAME_=$(basename $_SCRIPT_F_ )
+		;;
+		u)
+		_SSH_USERS_=$( echo $OPTARG| tr ',' ' ')
+		OPT_COUNT=$(( $OPT_COUNT + 1 ))
+		[ -z "$_SSH_USERS_" ] && printUsage && exit 1
+		;;
+		t)
+		_SSH_TIMEOUT_=$OPTARG
+		[ -z "$_SSH_TIMEOUT_" ] && printUsage && exit 1
+		;;
+		T)
+		_RUN_TIMEOUT_=$OPTARG
+		[ -z "$_RUN_TIMEOUT_" ] && printUsage && exit 1
+		;;
+		f)
+		_SUBSCRIPTS_F_=$( echo $OPTARG| tr ',' ' ')
+		[ -z "$_SUBSCRIPTS_F_" ] && printUsage && exit 1
+		;;
+		*) 
+		printUsage
+		exit 1
+		;;
+	esac
+	done
+	
+	if [ $OPT_COUNT -lt $COMPULSORY_NUM_OPT ]
+	then
+		echo "ERROR: Missing compulsory switch(es)."
+		printUsage
+		exit 1
+	fi
+	
+	if [ ! -r "$_TARGETS_F_" ]
+	then
+		echo "ERROR: Target hosts list $_TARGETS_F_ is not readable."
+		exit 1
+	fi
+
+	if [ ! -r "$_SCRIPT_F_" ]
+	then
+		echo "ERROR: Script file $_SCRIPT_F_ is not readable."
+		exit 1
+	fi
+
+	if [ -n "$_SUBSCRIPTS_F_" ]
+	then
+		local SUBSCRIPT_ERR="no"
+		local SUBSCRIPT_F=""
+		for SUBSCRIPT_F in $_SUBSCRIPTS_F_
+		do
+			if [ ! -r "$SUBSCRIPT_F" ]
+			then
+				echo "ERROR: Sub script file $SUBSCRIPT_F is not readable."
+				SUBSCRIPT_ERR="yes"
+			fi 
+		done
+		[ "$SUBSCRIPT_ERR" = "yes" ] && exit 1
+	fi
+}	
+
+remoteExe()
+{
+	local TARGET=$1
+	local TARGET_IP=$2
+	local SSH_USER=""
+	local SSH_STATUS=""
+	local TMPFILE=$(mktemp)
+	local THE_PID=""
+	local TMP_DIR="/tmp/$RANDOM-$RANDOM"
+	for SSH_USER in $_SSH_USERS_
+	do
+		cat $_SCRIPTS_TMP_DIR_/${_SCRIPTS_BUNDLE_}  | $_SSH_ -o ConnectTimeout=$_SSH_TIMEOUT_ ${SSH_USER}@${TARGET_IP} "mkdir -p $TMP_DIR && rm -rf $TMP_DIR/* && cd $TMP_DIR  && tar -xf - ; $TMP_DIR/$_SCRIPT_F_BASENAME_" > $_MASTER_FOLDER_/$TARGET.tmp &
+
+		THE_PID="$!"
+		sleep $_RUN_TIMEOUT_
+		if ps -p $THE_PID | grep -qv PID
+		then
+			SSH_STATUS="terminated"
+			cat $_MASTER_FOLDER_/$TARGET.tmp >> $_MASTER_FOLDER_/$TARGET.txt
+			echo "ERROR: $TARGET: SSH Operation terminated after $_RUN_TIMEOUT_ seconds (accessed by $SSH_USER)." >>  $_MASTER_FOLDER_/$TARGET.txt
+			kill -9 $THE_PID
+		else
+			if [ -s "$_MASTER_FOLDER_/$TARGET.tmp" ]
+			then
+				SSH_STATUS="ok"
+				mv $_MASTER_FOLDER_/$TARGET.tmp $_MASTER_FOLDER_/$TARGET.txt
+				break
+			else
+				SSH_STATUS="fail"
+				cat $_MASTER_FOLDER_/$TARGET.tmp >> $_MASTER_FOLDER_/$TARGET.txt
+				echo "ERROR: $TARGET: SSH Operation failed (accessed by $SSH_USER)." >> $_MASTER_FOLDER_/$TARGET.txt
+			fi
+		fi
+	done
+	echo "<$TARGET:start>" > $_MASTER_FOLDER_/$TARGET.txt.new
+	cat $_MASTER_FOLDER_/$TARGET.txt >> $_MASTER_FOLDER_/$TARGET.txt.new
+	echo "<$TARGET:end>" >> $_MASTER_FOLDER_/$TARGET.txt.new
+	echo " " >> $_MASTER_FOLDER_/$TARGET.txt.new
+	mv $_MASTER_FOLDER_/$TARGET.txt.new $_MASTER_FOLDER_/$TARGET.txt 
+}
+
+executing()
+{
+	local RESULT=""
+	local TARGET=""
+	local TARGET_IP=""
+	local SCRIPT_F=""
+	local CUR_DIR=$(pwd)
+
+	mkdir -p $_MASTER_FOLDER_
+	rm -rf $_MASTER_FOLDER_/*
+	mkdir -p $_SCRIPTS_TMP_DIR_
+	rm -rf $_SCRIPTS_TMP_DIR_/*
+	
+	for SCRIPT_F in $_SCRIPT_F_ $_SUBSCRIPTS_F_
+	do
+		if ! cp -pr $SCRIPT_F $_SCRIPTS_TMP_DIR_/. 
+		then
+		 	echo "ERROR: Can't retrieve scriptfile $SCRIPT_F." 
+			exit 1
+		fi
+	done
+	
+	cd $_SCRIPTS_TMP_DIR_
+	if ! tar cf ${_SCRIPTS_BUNDLE_} * 
+	then
+		echo "ERROR: Can't bundles scriptfiles."	
+		exit 1
+	fi
+	cd $CUR_DIR
+		
+	for TARGET in $( grep -v "^#" $_TARGETS_F_ | awk '{print$1}' )
+	do
+		TARGET_IP=$(host $TARGET 2>/dev/null | awk -F'address' '{print$2}')
+		if [ -z "$TARGET_IP"  ]
+		then
+			RESULT="ERROR: $TARGET: Can't resolve $TARGET IP address;"
+			echo "<$TARGET:start>" > $_MASTER_FOLDER_/$TARGET.txt 
+			echo "$RESULT" >> $_MASTER_FOLDER_/$TARGET.txt
+			echo "<$TARGET:end>" >> $_MASTER_FOLDER_/$TARGET.txt
+			echo " " >> $_MASTER_FOLDER_/$TARGET.txt
+		else
+			( remoteExe $TARGET $TARGET_IP ) &
+		fi
+		RESULT=""
+		TARGET=""
+		TARGET_IP=""
+	done 
+
+	## Since all the ssh processes were spawned to background,
+	## we have to wait for all background processes finish. 
+	wait	
+	cat $_MASTER_FOLDER_/*.txt 
+	rm -rf $_MASTER_FOLDER_
+	rm -rf $_SCRIPTS_TMP_DIR_
+
+}	
+		
+## MAIN SCRIPT ##
+getOptions $@
+if ! echo $- | grep -q "i"
+then
+        export_SSH_AUTH_SOCK
+fi
+executing 
+exit 0
+## MAIN END # 
+
+
